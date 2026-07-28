@@ -5,7 +5,7 @@ from flask import Flask
 import telebot
 from telebot import types
 from PIL import Image
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
@@ -122,8 +122,8 @@ def show_settings(message):
     
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("1 Per Page", callback_data="set_layout_1"),
-        types.InlineKeyboardButton("2 Per Page (Side-by-Side)", callback_data="set_layout_2"),
+        types.InlineKeyboardButton("1 Per Page (Full A4)", callback_data="set_layout_1"),
+        types.InlineKeyboardButton("2 Per Page (Landscape Side-by-Side)", callback_data="set_layout_2"),
         types.InlineKeyboardButton("4 Per Page (2x2 Grid)", callback_data="set_layout_4")
     )
     markup.add(types.InlineKeyboardButton(f"⚙️ {compress_str}", callback_data="toggle_compress"))
@@ -148,9 +148,15 @@ def generate_and_send_pdf(message):
     bot.send_message(user_id, "⚙️ Generating your customized PDF, please wait...")
     
     pdf_buffer = io.BytesIO()
-    c = canvas.Canvas(pdf_buffer, pagesize=A4)
-    page_width, page_height = A4
-    margin = 5  # Reduced side margin from 20 to 5 for minimal border blank space
+    layout = user['layout']
+    
+    # 2 Per Page uses Landscape A4; 1 and 4 use Portrait A4
+    if layout == '2':
+        c = canvas.Canvas(pdf_buffer, pagesize=landscape(A4))
+        page_width, page_height = landscape(A4)
+    else:
+        c = canvas.Canvas(pdf_buffer, pagesize=A4)
+        page_width, page_height = A4
     
     images = user['images']
     
@@ -165,39 +171,25 @@ def generate_and_send_pdf(message):
         img_io.seek(0)
         processed_readers.append((ImageReader(img_io), img.size[0], img.size[1]))
 
-    layout = user['layout']
-    
-    # 1 Image Per Page
+    # 1 Image Per Page: Fills 100% of the A4 page without white borders
     if layout == '1':
-        for img_reader, img_w, img_h in processed_readers:
-            avail_w = page_width - (2 * margin)
-            avail_h = page_height - (2 * margin)
-            ratio = min(avail_w / img_w, avail_h / img_h)
-            draw_w, draw_h = img_w * ratio, img_h * ratio
-            x = margin + (avail_w - draw_w) / 2
-            y = margin + (avail_h - draw_h) / 2
-            
-            c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
+        for img_reader, _, _ in processed_readers:
+            c.drawImage(img_reader, 0, 0, width=page_width, height=page_height)
             c.showPage()
             
-    # 2 Images Per Page (Horizontal Side-by-Side)
+    # 2 Images Per Page: Uses Landscape paper, placing 2 portrait images side-by-side cleanly
     elif layout == '2':
         cell_w = page_width / 2
+        cell_h = page_height
         for idx in range(0, len(processed_readers), 2):
             batch = processed_readers[idx:idx+2]
-            for i, (img_reader, img_w, img_h) in enumerate(batch):
-                avail_w = cell_w - (2 * margin)
-                avail_h = page_height - (2 * margin)
-                ratio = min(avail_w / img_w, avail_h / img_h)
-                draw_w, draw_h = img_w * ratio, img_h * ratio
-                
-                x = (i * cell_w) + margin + (avail_w - draw_w) / 2
-                y = margin + (avail_h - draw_h) / 2
-                
-                c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
+            for i, (img_reader, _, _) in enumerate(batch):
+                x = i * cell_w
+                y = 0
+                c.drawImage(img_reader, x, y, width=cell_w, height=cell_h)
             c.showPage()
 
-    # 4 Images Per Page (2x2 Grid)
+    # 4 Images Per Page: 2x2 grid filling cells completely
     elif layout == '4':
         cell_w, cell_h = page_width / 2, page_height / 2
         for idx in range(0, len(processed_readers), 4):
@@ -206,17 +198,9 @@ def generate_and_send_pdf(message):
                 (0, cell_h), (cell_w, cell_h),
                 (0, 0),      (cell_w, 0)
             ]
-            for i, (img_reader, img_w, img_h) in enumerate(batch):
+            for i, (img_reader, _, _) in enumerate(batch):
                 bx, by = coords[i]
-                avail_w = cell_w - (2 * margin)
-                avail_h = cell_h - (2 * margin)
-                ratio = min(avail_w / img_w, avail_h / img_h)
-                draw_w, draw_h = img_w * ratio, img_h * ratio
-                
-                x = bx + margin + (avail_w - draw_w) / 2
-                y = by + margin + (avail_h - draw_h) / 2
-                
-                c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
+                c.drawImage(img_reader, bx, by, width=cell_w, height=cell_h)
             c.showPage()
 
     c.save()
@@ -241,3 +225,4 @@ def run_bot():
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
     run_bot()
+2
