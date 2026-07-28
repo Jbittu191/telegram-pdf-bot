@@ -31,9 +31,10 @@ def get_user_session(user_id):
     if user_id not in user_data:
         user_data[user_id] = {
             'images': [],
-            'layout': '1',        # '1', '2', or '4'
-            'compress': False,    # True or False
-            'pdf_name': 'converted_document'
+            'layout': '1',            # '1', '2', or '4'
+            'compress': False,        # True or False
+            'pdf_name': 'converted_document',
+            'last_msg_id': None       # To track and update the status message
         }
     return user_data[user_id]
 
@@ -45,9 +46,10 @@ def send_welcome(message):
         'images': [],
         'layout': '1',
         'compress': False,
-        'pdf_name': 'converted_document'
+        'pdf_name': 'converted_document',
+        'last_msg_id': None
     }
-    bot.reply_to(message, "👋 Welcome! Send me photos one by one.\nWhen done, tap /settings or click 'Generate PDF Now' button.")
+    bot.reply_to(message, "👋 Welcome! Send me photos one by one or as a batch.\nWhen finished, tap ⚙️ Settings or click 📄 Generate PDF Now.")
 
 # Photo Handler
 @bot.message_handler(content_types=['photo'])
@@ -64,13 +66,27 @@ def handle_photos(message):
         
     user['images'].append(img)
     
-    # Control Keyboard
+    # Delete previous status message with buttons to keep chat clean
+    if user['last_msg_id']:
+        try:
+            bot.delete_message(message.chat.id, user['last_msg_id'])
+        except Exception:
+            pass
+            
+    # Keyboard attached ONLY to the latest message
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton("⚙️ Settings / Options", callback_data="settings"),
         types.InlineKeyboardButton("📄 Generate PDF Now", callback_data="make_pdf")
     )
-    bot.reply_to(message, f"✅ Photo #{len(user['images'])} received!", reply_markup=markup)
+    
+    sent_msg = bot.send_message(
+        message.chat.id, 
+        f"✅ Total Photos Received: <b>{len(user['images'])}</b>", 
+        parse_mode="HTML", 
+        reply_markup=markup
+    )
+    user['last_msg_id'] = sent_msg.message_id
 
 # Callback Query Handler (Buttons)
 @bot.callback_query_handler(func=lambda call: True)
@@ -107,14 +123,19 @@ def show_settings(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("1 Per Page", callback_data="set_layout_1"),
-        types.InlineKeyboardButton("2 Per Page", callback_data="set_layout_2"),
-        types.InlineKeyboardButton("4 Per Page (2x2)", callback_data="set_layout_4")
+        types.InlineKeyboardButton("2 Per Page (Side-by-Side)", callback_data="set_layout_2"),
+        types.InlineKeyboardButton("4 Per Page (2x2 Grid)", callback_data="set_layout_4")
     )
     markup.add(types.InlineKeyboardButton(f"⚙️ {compress_str}", callback_data="toggle_compress"))
     markup.add(types.InlineKeyboardButton(f"✏️ Rename ({user['pdf_name']})", callback_data="set_name"))
     markup.add(types.InlineKeyboardButton("🚀 Generate PDF Now", callback_data="make_pdf"))
     
-    bot.send_message(message.chat.id, f"<b>PDF Settings:</b>\n• {layout_str}\n• {compress_str}\n• Filename: {user['pdf_name']}.pdf", parse_mode="HTML", reply_markup=markup)
+    bot.send_message(
+        message.chat.id, 
+        f"<b>PDF Settings:</b>\n• {layout_str}\n• {compress_str}\n• Filename: {user['pdf_name']}.pdf", 
+        parse_mode="HTML", 
+        reply_markup=markup
+    )
 
 def generate_and_send_pdf(message):
     user_id = message.chat.id
@@ -129,6 +150,7 @@ def generate_and_send_pdf(message):
     pdf_buffer = io.BytesIO()
     c = canvas.Canvas(pdf_buffer, pagesize=A4)
     page_width, page_height = A4
+    margin = 5  # Reduced side margin from 20 to 5 for minimal border blank space
     
     images = user['images']
     
@@ -145,29 +167,37 @@ def generate_and_send_pdf(message):
 
     layout = user['layout']
     
+    # 1 Image Per Page
     if layout == '1':
         for img_reader, img_w, img_h in processed_readers:
-            ratio = min((page_width - 20) / img_w, (page_height - 20) / img_h)
+            avail_w = page_width - (2 * margin)
+            avail_h = page_height - (2 * margin)
+            ratio = min(avail_w / img_w, avail_h / img_h)
             draw_w, draw_h = img_w * ratio, img_h * ratio
-            x = (page_width - draw_w) / 2
-            y = (page_height - draw_h) / 2
+            x = margin + (avail_w - draw_w) / 2
+            y = margin + (avail_h - draw_h) / 2
             
             c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
             c.showPage()
             
+    # 2 Images Per Page (Horizontal Side-by-Side)
     elif layout == '2':
-        cell_h = page_height / 2
+        cell_w = page_width / 2
         for idx in range(0, len(processed_readers), 2):
             batch = processed_readers[idx:idx+2]
             for i, (img_reader, img_w, img_h) in enumerate(batch):
-                ratio = min((page_width - 20) / img_w, (cell_h - 20) / img_h)
+                avail_w = cell_w - (2 * margin)
+                avail_h = page_height - (2 * margin)
+                ratio = min(avail_w / img_w, avail_h / img_h)
                 draw_w, draw_h = img_w * ratio, img_h * ratio
-                x = (page_width - draw_w) / 2
-                y = page_height - ((i + 1) * cell_h) + ((cell_h - draw_h) / 2)
+                
+                x = (i * cell_w) + margin + (avail_w - draw_w) / 2
+                y = margin + (avail_h - draw_h) / 2
                 
                 c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
             c.showPage()
 
+    # 4 Images Per Page (2x2 Grid)
     elif layout == '4':
         cell_w, cell_h = page_width / 2, page_height / 2
         for idx in range(0, len(processed_readers), 4):
@@ -178,10 +208,13 @@ def generate_and_send_pdf(message):
             ]
             for i, (img_reader, img_w, img_h) in enumerate(batch):
                 bx, by = coords[i]
-                ratio = min((cell_w - 20) / img_w, (cell_h - 20) / img_h)
+                avail_w = cell_w - (2 * margin)
+                avail_h = cell_h - (2 * margin)
+                ratio = min(avail_w / img_w, avail_h / img_h)
                 draw_w, draw_h = img_w * ratio, img_h * ratio
-                x = bx + (cell_w - draw_w) / 2
-                y = by + (cell_h - draw_h) / 2
+                
+                x = bx + margin + (avail_w - draw_w) / 2
+                y = by + margin + (avail_h - draw_h) / 2
                 
                 c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
             c.showPage()
@@ -192,12 +225,13 @@ def generate_and_send_pdf(message):
     filename = f"{user['pdf_name']}.pdf"
     bot.send_document(user_id, (filename, pdf_buffer), caption="🎉 Here is your generated PDF!")
     
-    # Reset user session
+    # Reset user session after generation
     user_data[user_id] = {
         'images': [],
         'layout': '1',
         'compress': False,
-        'pdf_name': 'converted_document'
+        'pdf_name': 'converted_document',
+        'last_msg_id': None
     }
 
 def run_bot():
