@@ -7,6 +7,7 @@ from telebot import types
 from PIL import Image
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from reportlab.lib.utils import ImageReader
 
 # Initialize Flask server for UptimeRobot
 app = Flask(__name__)
@@ -19,7 +20,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# Replace with your NEW Telegram Bot Token
+# Your Telegram Bot Token
 TOKEN = "8200851113:AAEc2_HdU9GIT7bR2hi7zkHZl8cB7uu9MWw"
 bot = telebot.TeleBot(TOKEN)
 
@@ -46,7 +47,7 @@ def send_welcome(message):
         'compress': False,
         'pdf_name': 'converted_document'
     }
-    bot.reply_to(message, "👋 Welcome! Send me photos one by one.\nWhen done, tap /settings or click the 'Done & Convert' button below.")
+    bot.reply_to(message, "👋 Welcome! Send me photos one by one.\nWhen done, tap /settings or click 'Generate PDF Now' button.")
 
 # Photo Handler
 @bot.message_handler(content_types=['photo'])
@@ -131,70 +132,58 @@ def generate_and_send_pdf(message):
     
     images = user['images']
     
-    # Apply compression if turned on
-    processed_images = []
+    # Process images and convert to ImageReader
+    processed_readers = []
     for img in images:
+        img_io = io.BytesIO()
         if user['compress']:
-            img_io = io.BytesIO()
             img.save(img_io, format='JPEG', quality=50, optimize=True)
-            img = Image.open(img_io)
-        processed_images.append(img)
+        else:
+            img.save(img_io, format='JPEG', quality=85)
+        img_io.seek(0)
+        processed_readers.append((ImageReader(img_io), img.size[0], img.size[1]))
 
     layout = user['layout']
     
     if layout == '1':
-        for img in processed_images:
-            img_w, img_h = img.size
-            ratio = min(page_width / img_w, page_height / img_h)
+        for img_reader, img_w, img_h in processed_readers:
+            ratio = min((page_width - 20) / img_w, (page_height - 20) / img_h)
             draw_w, draw_h = img_w * ratio, img_h * ratio
             x = (page_width - draw_w) / 2
             y = (page_height - draw_h) / 2
             
-            temp_img_path = f"temp_{user_id}.jpg"
-            img.save(temp_img_path, quality=85)
-            c.drawImage(temp_img_path, x, y, width=draw_w, height=draw_h)
+            c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
             c.showPage()
-            if os.path.exists(temp_img_path): os.remove(temp_img_path)
             
     elif layout == '2':
-        # 2 per page (stacked vertically)
         cell_h = page_height / 2
-        for idx in range(0, len(processed_images), 2):
-            batch = processed_images[idx:idx+2]
-            for i, img in enumerate(batch):
-                img_w, img_h = img.size
+        for idx in range(0, len(processed_readers), 2):
+            batch = processed_readers[idx:idx+2]
+            for i, (img_reader, img_w, img_h) in enumerate(batch):
                 ratio = min((page_width - 20) / img_w, (cell_h - 20) / img_h)
                 draw_w, draw_h = img_w * ratio, img_h * ratio
                 x = (page_width - draw_w) / 2
                 y = page_height - ((i + 1) * cell_h) + ((cell_h - draw_h) / 2)
                 
-                temp_img_path = f"temp_{user_id}_{i}.jpg"
-                img.save(temp_img_path, quality=85)
-                c.drawImage(temp_img_path, x, y, width=draw_w, height=draw_h)
-                if os.path.exists(temp_img_path): os.remove(temp_img_path)
+                c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
             c.showPage()
 
     elif layout == '4':
-        # 4 per page (2x2 grid)
         cell_w, cell_h = page_width / 2, page_height / 2
-        for idx in range(0, len(processed_images), 4):
-            batch = processed_images[idx:idx+4]
+        for idx in range(0, len(processed_readers), 4):
+            batch = processed_readers[idx:idx+4]
             coords = [
-                (0, cell_h), (cell_w, cell_h),  # Top-left, Top-right
-                (0, 0),      (cell_w, 0)        # Bottom-left, Bottom-right
+                (0, cell_h), (cell_w, cell_h),
+                (0, 0),      (cell_w, 0)
             ]
-            for i, img in enumerate(batch):
+            for i, (img_reader, img_w, img_h) in enumerate(batch):
                 bx, by = coords[i]
-                img_w, img_h = img.size
                 ratio = min((cell_w - 20) / img_w, (cell_h - 20) / img_h)
                 draw_w, draw_h = img_w * ratio, img_h * ratio
                 x = bx + (cell_w - draw_w) / 2
                 y = by + (cell_h - draw_h) / 2
                 
-                temp_img_path = f"temp_{user_id}_{i}.jpg"
-                img.save(temp_img_path, quality=85)
-                c.drawImage(temp_img_path, x, y, width=draw_w, height=draw_h)
-                if os.path.exists(temp_img_path): os.remove(temp_img_path)
+                c.drawImage(img_reader, x, y, width=draw_w, height=draw_h)
             c.showPage()
 
     c.save()
@@ -203,7 +192,7 @@ def generate_and_send_pdf(message):
     filename = f"{user['pdf_name']}.pdf"
     bot.send_document(user_id, (filename, pdf_buffer), caption="🎉 Here is your generated PDF!")
     
-    # Reset user session after sending PDF
+    # Reset user session
     user_data[user_id] = {
         'images': [],
         'layout': '1',
