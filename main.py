@@ -201,7 +201,8 @@ def generate_and_send_pdf(message):
     }
 
 def run_bot():
-    bot.infinity_polling(skip_pending_updates=True)
+    bot.remove_webhook()
+    bot.infinity_polling()
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
