@@ -1,29 +1,42 @@
 import os
+import threading
+from flask import Flask
 from PIL import Image
 import telebot
 
-# Your Telegram Bot Token added directly below:
+# --- Dummy Web Server for Render ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# Start Flask server in background thread
+threading.Thread(target=run_flask).start()
+
+# --- Telegram Bot Code ---
 TOKEN = "8200851113:AAEc2_HdU9GIT7bR2hi7zkHZl8cB7uu9MWw"
 bot = telebot.TeleBot(TOKEN)
 
-# Dictionary to store uploaded images per user
 user_images = {}
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     text = (
         "👋 Welcome to Image to PDF Bot!\n\n"
-        "1️⃣ Forward or send me images.\n"
-        "2️⃣ Type /convert when you are finished.\n"
-        "3️⃣ Type /clear to remove stored images."
+        "1️⃣ Send/Forward me images.\n"
+        "2️⃣ Type /convert when finished.\n"
+        "3️⃣ Type /clear to remove images."
     )
     bot.reply_to(message, text)
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     user_id = message.from_user.id
-    
-    # Download the highest resolution photo
     file_id = message.photo[-1].file_id
     file_info = bot.get_file(file_id)
     downloaded_file = bot.download_file(file_info.file_path)
@@ -44,13 +57,11 @@ def handle_photo(message):
 @bot.message_handler(commands=['convert'])
 def convert_to_pdf(message):
     user_id = message.from_user.id
-    
     if user_id not in user_images or not user_images[user_id]:
         bot.reply_to(message, "⚠️ No images found! Send some images first.")
         return
 
     msg = bot.reply_to(message, "⏳ Converting images to PDF...")
-    
     pdf_path = f"output_{user_id}.pdf"
     image_list = []
 
@@ -61,7 +72,6 @@ def convert_to_pdf(message):
                 img = img.convert('RGB')
             image_list.append(img)
 
-        # Merge images into a single multi-page PDF
         image_list[0].save(
             pdf_path, 
             "PDF", 
@@ -84,7 +94,7 @@ def convert_to_pdf(message):
 def clear_images(message):
     user_id = message.from_user.id
     cleanup_user_data(user_id)
-    bot.reply_to(message, "🗑️ Cleared all your cached images.")
+    bot.reply_to(message, "🗑️ Cleared all stored images.")
 
 def cleanup_user_data(user_id, pdf_path=None):
     user_dir = f"temp_{user_id}"
